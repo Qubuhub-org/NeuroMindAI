@@ -1,4 +1,7 @@
-from .config import NeuroMindConfig
-from .model import NeuroMindForCausalLM
+"""NeuroMindAI model package."""
 
-__all__ = ["NeuroMindConfig", "NeuroMindForCausalLM"]
+from neuromind.config import ModelConfig
+from neuromind.model import NeuroMindLM
+
+__all__ = ["ModelConfig", "NeuroMindLM"]
+__version__ = "0.1.0"

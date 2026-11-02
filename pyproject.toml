@@ -1,13 +1,26 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "neuromindai"
 version = "0.1.0"
-description = "NeuroMindAI: a from-scratch decoder-only language model."
+description = "A modular, research-oriented decoder-only language model foundation."
+readme = "README.md"
 requires-python = ">=3.10"
 dependencies = ["torch>=2.2"]
 
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.5"]
+
 [tool.setuptools.packages.find]
-include = ["neuromind*"]
+where = ["."]
+include = ["neuromind*", "tokenizer*", "training*", "datasets*", "evaluation*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

@@ -1,46 +1,45 @@
 import torch
-from neuromind import NeuroMindConfig, NeuroMindForCausalLM
 
-def test_forward_shapes():
-    config = NeuroMindConfig(vocab_size=128, hidden_size=64, num_hidden_layers=2, num_attention_heads=4, num_kv_heads=2, intermediate_size=256, max_position_embeddings=32)
-    model = NeuroMindForCausalLM(config)
-    out = model(torch.randint(0, config.vocab_size, (2, 8)))
-    assert out["logits"].shape == (2, 8, config.vocab_size)
-
-def test_backward():
-    config = NeuroMindConfig(vocab_size=64, hidden_size=32, num_hidden_layers=1, num_attention_heads=4, num_kv_heads=2, intermediate_size=128, max_position_embeddings=16)
-    model = NeuroMindForCausalLM(config)
-    ids = torch.randint(0, config.vocab_size, (2, 8))
-    labels = torch.randint(0, config.vocab_size, (2, 8))
-    loss = model(ids, labels=labels)["loss"]
-    loss.backward()
-    assert torch.isfinite(loss)
+from neuromind import ModelConfig, NeuroMindLM
 
 
-
-def test_rejects_invalid_rope_head_dimension():
-    import pytest
-    with pytest.raises(ValueError, match="even for RoPE"):
-        NeuroMindConfig(vocab_size=32, hidden_size=30, num_hidden_layers=1,
-                        num_attention_heads=2, num_kv_heads=1, intermediate_size=64)
-
-
-def test_rejects_context_overflow():
-    import pytest
-    config = NeuroMindConfig(vocab_size=32, hidden_size=32, num_hidden_layers=1,
-                             num_attention_heads=2, num_kv_heads=1,
-                             intermediate_size=64, max_position_embeddings=4)
-    model = NeuroMindForCausalLM(config)
-    with pytest.raises(ValueError, match="exceeds max_position_embeddings"):
-        model(torch.randint(0, config.vocab_size, (1, 5)))
+def tiny_config():
+    return ModelConfig(
+        vocab_size=256,
+        context_length=16,
+        d_model=32,
+        n_layers=2,
+        n_heads=4,
+        d_ff=64,
+        dropout=0.0,
+    )
 
 
-def test_generation_handles_long_prompt_with_context_window():
-    config = NeuroMindConfig(vocab_size=32, hidden_size=32, num_hidden_layers=1,
-                             num_attention_heads=2, num_kv_heads=1,
-                             intermediate_size=64, max_position_embeddings=4,
-                             eos_token_id=None)
-    model = NeuroMindForCausalLM(config)
-    prompt = torch.randint(0, config.vocab_size, (1, 6))
-    generated = model.generate(prompt, max_new_tokens=2, temperature=0)
-    assert generated.shape == (1, 8)
+def test_forward_shape_and_loss():
+    model = NeuroMindLM(tiny_config())
+    inputs = torch.randint(0, 256, (2, 8))
+    logits, loss = model(inputs, inputs)
+    assert logits.shape == (2, 8, 256)
+    assert loss is not None and torch.isfinite(loss)
+
+
+def test_context_limit_is_enforced():
+    model = NeuroMindLM(tiny_config())
+    inputs = torch.randint(0, 256, (1, 17))
+    try:
+        model(inputs)
+    except ValueError as exc:
+        assert "context window" in str(exc)
+    else:
+        raise AssertionError("expected a context length error")
+
+
+def test_causal_mask_blocks_future_tokens():
+    torch.manual_seed(7)
+    model = NeuroMindLM(tiny_config()).eval()
+    first = torch.tensor([[10, 11, 12, 13]])
+    changed_future = torch.tensor([[10, 11, 99, 98]])
+    with torch.no_grad():
+        logits_a, _ = model(first)
+        logits_b, _ = model(changed_future)
+    assert torch.allclose(logits_a[:, :2], logits_b[:, :2], atol=1e-6)
