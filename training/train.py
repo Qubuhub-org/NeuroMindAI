@@ -1,12 +1,16 @@
-"""Training engine with gradient accumulation, CUDA AMP, and resumable checkpoints."""
+"""Training engine with streaming input, DDP, CUDA AMP, and resumable checkpoints."""
 
 import argparse
+import os
 import random
 from pathlib import Path
 
 import torch
-from torch.utils.data import DataLoader
+import torch.distributed as distributed
+from torch.nn.parallel import DistributedDataParallel
+from torch.utils.data import DataLoader, DistributedSampler
 
+from datasets.streaming import StreamingTextWindowDataset
 from datasets.text import TextWindowDataset
 from neuromind import ModelConfig, NeuroMindLM
 from tokenizer import BpeTokenizer
@@ -16,7 +20,7 @@ def _save_checkpoint(
     output: Path,
     model: NeuroMindLM,
     optimizer: torch.optim.Optimizer,
-    scaler: torch.cuda.amp.GradScaler,
+    scaler: torch.amp.GradScaler,
     tokenizer: BpeTokenizer,
     step: int,
     seed: int,
@@ -39,101 +43,191 @@ def _save_checkpoint(
 def train(args: argparse.Namespace) -> Path:
     if args.steps < 1 or args.batch_size < 1 or args.grad_accum_steps < 1:
         raise ValueError("steps, batch_size, and grad_accum_steps must be positive")
-    random.seed(args.seed)
-    torch.manual_seed(args.seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(args.seed)
 
-    device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
-    use_amp = bool(args.amp)
-    if use_amp and device.type != "cuda":
-        raise ValueError("--amp requires a CUDA device")
-    amp_dtype = torch.float16 if args.amp_dtype == "fp16" else torch.bfloat16
-    use_scaler = use_amp and amp_dtype == torch.float16
-    scaler = torch.cuda.amp.GradScaler(enabled=use_scaler)
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    is_distributed = world_size > 1
+    rank = int(os.environ.get("RANK", "0"))
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    process_group_started = False
 
-    corpus = Path(args.data).read_text(encoding="utf-8")
-    tokenizer = BpeTokenizer.train(
-        corpus, vocab_size=args.vocab_size, min_frequency=args.min_frequency
-    )
-    config = ModelConfig(
-        vocab_size=tokenizer.vocab_size,
-        context_length=args.context_length,
-        d_model=args.d_model,
-        n_layers=args.layers,
-        n_heads=args.heads,
-        d_ff=args.d_ff,
-        dropout=args.dropout,
-    )
-    dataset = TextWindowDataset(args.data, config.context_length, tokenizer)
-    loader = DataLoader(
-        dataset,
-        batch_size=args.batch_size,
-        shuffle=True,
-        drop_last=False,
-        generator=torch.Generator().manual_seed(args.seed),
-    )
-    iterator = iter(loader)
-    model = NeuroMindLM(config).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
-    step = 0
+    if is_distributed:
+        backend = "nccl" if torch.cuda.is_available() else "gloo"
+        distributed.init_process_group(backend=backend)
+        process_group_started = True
 
-    if args.resume:
-        checkpoint = torch.load(args.resume, map_location=device, weights_only=True)
-        if checkpoint.get("config") != config.to_dict():
-            raise ValueError("resume checkpoint model configuration does not match")
-        if checkpoint.get("tokenizer") != tokenizer.to_dict():
-            raise ValueError("resume checkpoint tokenizer does not match current training corpus")
-        model.load_state_dict(checkpoint["model_state"])
-        if "optimizer_state" in checkpoint:
-            optimizer.load_state_dict(checkpoint["optimizer_state"])
-        if "scaler_state" in checkpoint:
-            scaler.load_state_dict(checkpoint["scaler_state"])
-        step = int(checkpoint.get("training", {}).get("steps", 0))
-        if step >= args.steps:
-            raise ValueError("resume checkpoint has already reached the requested step count")
+    try:
+        if args.device:
+            device = torch.device(args.device)
+        elif torch.cuda.is_available():
+            device = torch.device(f"cuda:{local_rank}" if is_distributed else "cuda")
+        else:
+            device = torch.device("cpu")
+        if device.type == "cuda":
+            torch.cuda.set_device(device)
 
-    model.train()
-    while step < args.steps:
-        optimizer.zero_grad(set_to_none=True)
-        accumulated_loss = 0.0
-        for _ in range(args.grad_accum_steps):
+        random.seed(args.seed + rank)
+        torch.manual_seed(args.seed + rank)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(args.seed + rank)
+
+        use_amp = bool(args.amp)
+        if use_amp and device.type != "cuda":
+            raise ValueError("--amp requires a CUDA device")
+        if args.streaming and is_distributed:
+            raise ValueError(
+                "streaming DDP is not enabled yet; use map-style data with torchrun"
+            )
+        amp_dtype = torch.float16 if args.amp_dtype == "fp16" else torch.bfloat16
+        use_scaler = use_amp and amp_dtype == torch.float16
+        scaler = torch.amp.GradScaler("cuda", enabled=use_scaler)
+
+        corpus = Path(args.data).read_text(encoding="utf-8")
+        tokenizer = BpeTokenizer.train(
+            corpus, vocab_size=args.vocab_size, min_frequency=args.min_frequency
+        )
+        config = ModelConfig(
+            vocab_size=tokenizer.vocab_size,
+            context_length=args.context_length,
+            d_model=args.d_model,
+            n_layers=args.layers,
+            n_heads=args.heads,
+            d_ff=args.d_ff,
+            dropout=args.dropout,
+        )
+
+        if args.streaming:
+            dataset = StreamingTextWindowDataset(
+                args.data, config.context_length, tokenizer
+            )
+            sampler = None
+        else:
+            dataset = TextWindowDataset(args.data, config.context_length, tokenizer)
+            sampler = (
+                DistributedSampler(
+                    dataset,
+                    num_replicas=world_size,
+                    rank=rank,
+                    shuffle=True,
+                    seed=args.seed,
+                )
+                if is_distributed
+                else None
+            )
+
+        loader = DataLoader(
+            dataset,
+            batch_size=args.batch_size,
+            shuffle=not args.streaming and sampler is None,
+            sampler=sampler,
+            drop_last=False,
+            generator=torch.Generator().manual_seed(args.seed + rank),
+        )
+        iterator = iter(loader)
+        raw_model = NeuroMindLM(config).to(device)
+        optimizer = torch.optim.AdamW(raw_model.parameters(), lr=args.learning_rate)
+        step = 0
+
+        if args.resume:
+            checkpoint = torch.load(args.resume, map_location=device, weights_only=True)
+            if checkpoint.get("config") != config.to_dict():
+                raise ValueError("resume checkpoint model configuration does not match")
+            if checkpoint.get("tokenizer") != tokenizer.to_dict():
+                raise ValueError(
+                    "resume checkpoint tokenizer does not match current training corpus"
+                )
+            raw_model.load_state_dict(checkpoint["model_state"])
+            if "optimizer_state" in checkpoint:
+                optimizer.load_state_dict(checkpoint["optimizer_state"])
+            if "scaler_state" in checkpoint:
+                scaler.load_state_dict(checkpoint["scaler_state"])
+            step = int(checkpoint.get("training", {}).get("steps", 0))
+            if step >= args.steps:
+                raise ValueError(
+                    "resume checkpoint has already reached the requested step count"
+                )
+
+        model = (
+            DistributedDataParallel(
+                raw_model,
+                device_ids=[device.index] if device.type == "cuda" else None,
+            )
+            if is_distributed
+            else raw_model
+        )
+        epoch = 0
+        model.train()
+
+        while step < args.steps:
             try:
                 inputs, targets = next(iterator)
             except StopIteration:
+                epoch += 1
+                if sampler is not None:
+                    sampler.set_epoch(epoch)
                 iterator = iter(loader)
                 inputs, targets = next(iterator)
-            inputs, targets = inputs.to(device), targets.to(device)
-            with torch.autocast(
-                device_type=device.type, dtype=amp_dtype, enabled=use_amp
+
+            optimizer.zero_grad(set_to_none=True)
+            accumulated_loss = 0.0
+            batch_inputs = [(inputs, targets)]
+            for _ in range(args.grad_accum_steps - 1):
+                try:
+                    batch_inputs.append(next(iterator))
+                except StopIteration:
+                    epoch += 1
+                    if sampler is not None:
+                        sampler.set_epoch(epoch)
+                    iterator = iter(loader)
+                    batch_inputs.append(next(iterator))
+
+            for inputs, targets in batch_inputs:
+                inputs, targets = inputs.to(device), targets.to(device)
+                with torch.autocast(
+                    device_type=device.type, dtype=amp_dtype, enabled=use_amp
+                ):
+                    _, loss = model(inputs, targets)
+                    if loss is None:
+                        raise RuntimeError("training loss was not computed")
+                    scaled_loss = loss / args.grad_accum_steps
+                scaler.scale(scaled_loss).backward()
+                accumulated_loss += loss.detach().float().item()
+
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+            scaler.step(optimizer)
+            scaler.update()
+            step += 1
+
+            mean_loss = accumulated_loss / args.grad_accum_steps
+            if rank == 0 and (
+                step == 1 or step % args.log_every == 0 or step == args.steps
             ):
-                _, loss = model(inputs, targets)
-                if loss is None:
-                    raise RuntimeError("training loss was not computed")
-                scaled_loss = loss / args.grad_accum_steps
-            scaler.scale(scaled_loss).backward()
-            accumulated_loss += loss.detach().float().item()
+                print(f"step={step} loss={mean_loss:.4f}")
 
-        scaler.unscale_(optimizer)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
-        scaler.step(optimizer)
-        scaler.update()
-        step += 1
+            if rank == 0 and args.save_every > 0 and step % args.save_every == 0:
+                _save_checkpoint(
+                    Path(args.output),
+                    raw_model,
+                    optimizer,
+                    scaler,
+                    tokenizer,
+                    step,
+                    args.seed,
+                )
 
-        mean_loss = accumulated_loss / args.grad_accum_steps
-        if step == 1 or step % args.log_every == 0 or step == args.steps:
-            print(f"step={step} loss={mean_loss:.4f}")
-
-        if args.save_every > 0 and step % args.save_every == 0:
+        output = Path(args.output)
+        if rank == 0:
             _save_checkpoint(
-                Path(args.output), model, optimizer, scaler, tokenizer, step, args.seed
+                output, raw_model, optimizer, scaler, tokenizer, step, args.seed
             )
-
-    output = Path(args.output)
-    _save_checkpoint(output, model, optimizer, scaler, tokenizer, step, args.seed)
-    print(f"tokenizer vocabulary: {tokenizer.vocab_size}")
-    print(f"checkpoint saved: {output}")
-    return output
+            print(f"tokenizer vocabulary: {tokenizer.vocab_size}")
+            print(f"checkpoint saved: {output}")
+        if is_distributed:
+            distributed.barrier()
+        return output
+    finally:
+        if process_group_started:
+            distributed.destroy_process_group()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -158,6 +252,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--log-every", type=int, default=25)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default=None)
+    parser.add_argument("--streaming", action="store_true", help="read corpus incrementally")
     parser.add_argument("--amp", action="store_true", help="enable CUDA automatic mixed precision")
     parser.add_argument("--amp-dtype", choices=("fp16", "bf16"), default="bf16")
     return parser
