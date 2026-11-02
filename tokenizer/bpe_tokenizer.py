@@ -7,6 +7,7 @@ appended in training order, making the vocabulary deterministic and reversible.
 from __future__ import annotations
 
 from collections import Counter
+from itertools import pairwise
 from dataclasses import dataclass
 
 
@@ -45,7 +46,7 @@ class BpeTokenizer:
     @classmethod
     def train(
         cls, text: str, vocab_size: int = 512, min_frequency: int = 2
-    ) -> "BpeTokenizer":
+    ) -> BpeTokenizer:
         """Learn merges from UTF-8 bytes; ties are broken lexicographically."""
         if not isinstance(text, str):
             raise TypeError("training text must be a string")
@@ -56,7 +57,7 @@ class BpeTokenizer:
         sequence = list(text.encode("utf-8"))
         tokenizer = cls()
         while tokenizer.vocab_size < vocab_size and len(sequence) > 1:
-            counts = Counter(zip(sequence, sequence[1:]))
+            counts = Counter(pairwise(sequence))
             if not counts:
                 break
             pair, frequency = min(
@@ -89,7 +90,7 @@ class BpeTokenizer:
         while len(tokens) > 1:
             best_rank = None
             best_pair = None
-            for pair in zip(tokens, tokens[1:]):
+            for pair in pairwise(tokens):
                 ranked = self._merge_ranks.get(pair)
                 if ranked is not None and (best_rank is None or ranked[0] < best_rank):
                     best_rank = ranked[0]
