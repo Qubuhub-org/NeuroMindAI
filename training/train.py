@@ -1,4 +1,4 @@
-"""Reproducible next-token training with a checkpointed native BPE tokenizer."""
+"""Training engine with gradient accumulation, CUDA AMP, and resumable checkpoints."""
 
 import argparse
 import random
@@ -12,15 +12,46 @@ from neuromind import ModelConfig, NeuroMindLM
 from tokenizer import BpeTokenizer
 
 
+def _save_checkpoint(
+    output: Path,
+    model: NeuroMindLM,
+    optimizer: torch.optim.Optimizer,
+    scaler: torch.cuda.amp.GradScaler,
+    tokenizer: BpeTokenizer,
+    step: int,
+    seed: int,
+) -> None:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {
+            "format_version": 2,
+            "config": model.config.to_dict(),
+            "tokenizer": tokenizer.to_dict(),
+            "model_state": model.state_dict(),
+            "optimizer_state": optimizer.state_dict(),
+            "scaler_state": scaler.state_dict(),
+            "training": {"steps": step, "seed": seed},
+        },
+        output,
+    )
+
+
 def train(args: argparse.Namespace) -> Path:
-    if args.steps < 1 or args.batch_size < 1:
-        raise ValueError("steps and batch_size must be positive")
+    if args.steps < 1 or args.batch_size < 1 or args.grad_accum_steps < 1:
+        raise ValueError("steps, batch_size, and grad_accum_steps must be positive")
     random.seed(args.seed)
     torch.manual_seed(args.seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
 
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
+    use_amp = bool(args.amp)
+    if use_amp and device.type != "cuda":
+        raise ValueError("--amp requires a CUDA device")
+    amp_dtype = torch.float16 if args.amp_dtype == "fp16" else torch.bfloat16
+    use_scaler = use_amp and amp_dtype == torch.float16
+    scaler = torch.cuda.amp.GradScaler(enabled=use_scaler)
+
     corpus = Path(args.data).read_text(encoding="utf-8")
     tokenizer = BpeTokenizer.train(
         corpus, vocab_size=args.vocab_size, min_frequency=args.min_frequency
@@ -35,40 +66,71 @@ def train(args: argparse.Namespace) -> Path:
         dropout=args.dropout,
     )
     dataset = TextWindowDataset(args.data, config.context_length, tokenizer)
-    loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, drop_last=False)
+    loader = DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        drop_last=False,
+        generator=torch.Generator().manual_seed(args.seed),
+    )
+    iterator = iter(loader)
     model = NeuroMindLM(config).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
-    model.train()
-
     step = 0
+
+    if args.resume:
+        checkpoint = torch.load(args.resume, map_location=device, weights_only=True)
+        if checkpoint.get("config") != config.to_dict():
+            raise ValueError("resume checkpoint model configuration does not match")
+        if checkpoint.get("tokenizer") != tokenizer.to_dict():
+            raise ValueError("resume checkpoint tokenizer does not match current training corpus")
+        model.load_state_dict(checkpoint["model_state"])
+        if "optimizer_state" in checkpoint:
+            optimizer.load_state_dict(checkpoint["optimizer_state"])
+        if "scaler_state" in checkpoint:
+            scaler.load_state_dict(checkpoint["scaler_state"])
+        step = int(checkpoint.get("training", {}).get("steps", 0))
+        if step >= args.steps:
+            raise ValueError("resume checkpoint has already reached the requested step count")
+
+    model.train()
     while step < args.steps:
-        for inputs, targets in loader:
+        optimizer.zero_grad(set_to_none=True)
+        accumulated_loss = 0.0
+        for _ in range(args.grad_accum_steps):
+            try:
+                inputs, targets = next(iterator)
+            except StopIteration:
+                iterator = iter(loader)
+                inputs, targets = next(iterator)
             inputs, targets = inputs.to(device), targets.to(device)
-            _, loss = model(inputs, targets)
-            if loss is None:
-                raise RuntimeError("training loss was not computed")
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
-            optimizer.step()
-            step += 1
-            if step == 1 or step % args.log_every == 0 or step == args.steps:
-                print(f"step={step} loss={loss.item():.4f}")
-            if step >= args.steps:
-                break
+            with torch.autocast(
+                device_type=device.type, dtype=amp_dtype, enabled=use_amp
+            ):
+                _, loss = model(inputs, targets)
+                if loss is None:
+                    raise RuntimeError("training loss was not computed")
+                scaled_loss = loss / args.grad_accum_steps
+            scaler.scale(scaled_loss).backward()
+            accumulated_loss += loss.detach().float().item()
+
+        scaler.unscale_(optimizer)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+        scaler.step(optimizer)
+        scaler.update()
+        step += 1
+
+        mean_loss = accumulated_loss / args.grad_accum_steps
+        if step == 1 or step % args.log_every == 0 or step == args.steps:
+            print(f"step={step} loss={mean_loss:.4f}")
+
+        if args.save_every > 0 and step % args.save_every == 0:
+            _save_checkpoint(
+                Path(args.output), model, optimizer, scaler, tokenizer, step, args.seed
+            )
 
     output = Path(args.output)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(
-        {
-            "format_version": 2,
-            "config": config.to_dict(),
-            "tokenizer": tokenizer.to_dict(),
-            "model_state": model.state_dict(),
-            "training": {"steps": step, "seed": args.seed},
-        },
-        output,
-    )
+    _save_checkpoint(output, model, optimizer, scaler, tokenizer, step, args.seed)
     print(f"tokenizer vocabulary: {tokenizer.vocab_size}")
     print(f"checkpoint saved: {output}")
     return output
@@ -78,8 +140,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Train the NeuroMindAI language model.")
     parser.add_argument("--data", required=True, help="UTF-8 plain-text training corpus")
     parser.add_argument("--output", default="checkpoints/neuromind.pt")
-    parser.add_argument("--steps", type=int, default=1000)
+    parser.add_argument("--resume", default=None, help="resume from a compatible checkpoint")
+    parser.add_argument("--steps", type=int, default=1000, help="total optimizer update steps")
     parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--grad-accum-steps", type=int, default=1)
+    parser.add_argument("--save-every", type=int, default=100)
     parser.add_argument("--vocab-size", type=int, default=512)
     parser.add_argument("--min-frequency", type=int, default=2)
     parser.add_argument("--context-length", type=int, default=128)
@@ -93,6 +158,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--log-every", type=int, default=25)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default=None)
+    parser.add_argument("--amp", action="store_true", help="enable CUDA automatic mixed precision")
+    parser.add_argument("--amp-dtype", choices=("fp16", "bf16"), default="bf16")
     return parser
 
 
