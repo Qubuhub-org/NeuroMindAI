@@ -40,3 +40,18 @@ Resume requires the same model configuration and tokenizer state. This protects 
 ## Boundaries
 
 This is a compact research implementation, not a pretrained foundation model. Distributed training, streaming datasets, optimized large-corpus BPE, instruction tuning, tool use, and safety evaluation remain future work.
+
+
+## Incremental inference and KV cache
+
+NeuroMind v1 exposes `forward_with_cache`, which stores per-layer rotated keys and values. Subsequent tokens reuse those tensors instead of recomputing attention projections for the full prefix. Cached attention uses an explicit offset-aware causal mask; this is important because single-token decoding with a naïve triangular mask can expose incorrect positions. Generation uses the cache and rebuilds it when the context window rolls over. Legacy Transformer checkpoints continue through the uncached path.
+
+## Streaming and distributed data
+
+`StreamingTextWindowDataset` reads UTF-8 lines incrementally and emits overlapping next-token windows while retaining a context-sized carry between lines. The training CLI exposes this with `--streaming`. The current tokenizer-training stage still reads the corpus into memory, so this is streaming batch ingestion rather than a fully streaming end-to-end preprocessing pipeline.
+
+Map-style training supports PyTorch DistributedDataParallel under `torchrun`, using a `DistributedSampler` to shard samples and synchronize gradients. Streaming DDP is intentionally rejected for now because line-based shards can have unequal batch counts and cause synchronization deadlocks. This limitation is explicit rather than silently risking a hung multi-GPU job.
+
+## Performance measurement
+
+`python -m benchmarks.benchmark_model` measures synthetic forward/backward throughput, reports parameter count and tokens per second, and records peak allocated CUDA memory when available. It is a local throughput measurement, not a quality benchmark. Language quality must be evaluated separately on held-out datasets.
