@@ -37,8 +37,8 @@ def main() -> None:
     parser.add_argument("--device", default=None)
     args = parser.parse_args()
 
-    model, device = load_model(args.checkpoint, args.device)
-    dataset = TextWindowDataset(args.data, model.config.context_length)
+    model, device, tokenizer = load_model(args.checkpoint, args.device)
+    dataset = TextWindowDataset(args.data, model.config.context_length, tokenizer)
     loader = DataLoader(dataset, batch_size=args.batch_size)
     metrics = evaluate(model, loader, device)
     print(f"cross_entropy={metrics['cross_entropy']:.6f}")
