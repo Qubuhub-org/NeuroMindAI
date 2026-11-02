@@ -67,13 +67,11 @@ class CausalSelfAttention(nn.Module):
 
     def forward(self, hidden: torch.Tensor) -> torch.Tensor:
         batch, sequence, width = hidden.shape
-        qkv = self.qkv(hidden).view(
-            batch, sequence, 3, self.n_heads, self.head_dim
-        )
+        qkv = self.qkv(hidden).view(batch, sequence, 3, width)
         query, key, value = qkv.unbind(dim=2)
-        query = query.transpose(1, 2)
-        key = key.transpose(1, 2)
-        value = value.transpose(1, 2)
+        query = query.view(batch, sequence, self.n_heads, self.head_dim).transpose(1, 2)
+        key = key.view(batch, sequence, self.n_heads, self.head_dim).transpose(1, 2)
+        value = value.view(batch, sequence, self.n_heads, self.head_dim).transpose(1, 2)
         query, key = apply_rotary(query, key, self.rope_theta)
         attended = F.scaled_dot_product_attention(
             query,
