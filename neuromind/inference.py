@@ -14,7 +14,10 @@ def load_model(
 ) -> tuple[NeuroMindLM, torch.device, BpeTokenizer | ByteTokenizer]:
     target = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
     payload = torch.load(checkpoint, map_location=target, weights_only=True)
-    config = ModelConfig.from_dict(payload["config"])
+    config_values = dict(payload["config"])
+    if "position_embedding.weight" in payload["model_state"]:
+        config_values["architecture"] = "legacy_transformer"
+    config = ModelConfig.from_dict(config_values)
     tokenizer_state = payload.get("tokenizer")
     if tokenizer_state is None:
         tokenizer = ByteTokenizer()
