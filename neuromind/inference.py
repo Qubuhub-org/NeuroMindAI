@@ -6,17 +6,28 @@ from pathlib import Path
 import torch
 
 from neuromind import ModelConfig, NeuroMindLM
-from tokenizer import ByteTokenizer
+from tokenizer import BpeTokenizer, ByteTokenizer
 
 
-def load_model(checkpoint: str | Path, device: str | None = None) -> tuple[NeuroMindLM, torch.device]:
+def load_model(
+    checkpoint: str | Path, device: str | None = None
+) -> tuple[NeuroMindLM, torch.device, BpeTokenizer | ByteTokenizer]:
     target = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
     payload = torch.load(checkpoint, map_location=target, weights_only=True)
     config = ModelConfig.from_dict(payload["config"])
+    tokenizer_state = payload.get("tokenizer")
+    if tokenizer_state is None:
+        tokenizer = ByteTokenizer()
+    elif tokenizer_state.get("type") == "bpe":
+        tokenizer = BpeTokenizer.from_dict(tokenizer_state)
+    else:
+        raise ValueError("checkpoint contains an unsupported tokenizer")
+    if tokenizer.vocab_size != config.vocab_size:
+        raise ValueError("checkpoint tokenizer vocabulary does not match model configuration")
     model = NeuroMindLM(config).to(target)
     model.load_state_dict(payload["model_state"])
     model.eval()
-    return model, target
+    return model, target, tokenizer
 
 
 @torch.no_grad()
@@ -60,8 +71,7 @@ def main() -> None:
     parser.add_argument("--device", default=None)
     args = parser.parse_args()
 
-    model, device = load_model(args.checkpoint, args.device)
-    tokenizer = ByteTokenizer()
+    model, device, tokenizer = load_model(args.checkpoint, args.device)
     encoded = torch.tensor([tokenizer.encode(args.prompt)], dtype=torch.long, device=device)
     output = generate(model, encoded, args.max_new_tokens, args.temperature, args.top_k)
     print(tokenizer.decode(output[0].tolist()))
