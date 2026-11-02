@@ -1,3 +1,80 @@
+I’m executing the next NeuroMindAI development phase directly on the existing develop branch, keeping main protected.
+
+The first upgrade is a native Byte-Pair Encoding (BPE) tokenizer. It will learn vocabulary from training text, preserve UTF-8 byte fallback, serialize its vocabulary and merge rules, and integrate with model training and inference.
+
+The existing byte-tokenizer interface will remain available for backward compatibility.
+
+NeuroMindAI — Development milestone 2
+
+Repository: Qubuhub-org/NeuroMindAI
+
+I’ve implemented three major upgrades directly in develop.
+
+1. Native BPE tokenizer
+
+* Learns vocabulary from training text.
+* 256-byte fallback.
+* Deterministic merge rules.
+* Vocabulary serialization.
+* Checkpoint-compatible tokenizer restoration.
+* Unicode support.
+
+2. NeuroMind v1 architecture
+
+NeuroMind v1
+
+Token Embeddings
+
+RMSNorm
+
+Rotary Causal Attention (RoPE)
+
+SwiGLU Feed-Forward Network
+
+Residual Connections + Final RMSNorm
+
+Tied Language Model Head
+
+Custom decoder architecture implemented using PyTorch modules.
+
+Legacy Transformer checkpoint compatibility is retained.
+
+3. Training engine
+
+Capability	Status
+Gradient accumulation	Implemented
+CUDA mixed precision	Implemented
+FP16 / BF16	Implemented
+Gradient clipping	Implemented
+Periodic checkpoints	Implemented
+Training resume	Implemented
+Evaluation metrics	Implemented
+
+GitHub status
+
+* Open repository⁠￼
+* View develop branch⁠￼
+* Review Pull Request #2⁠￼
+* GitHub Actions run #28⁠￼
+
+25 commits, 23 changed files, approximately 1,114 additions.
+
+The latest CI run has started across Python 3.10, 3.11 and 3.12. Dependency installation is underway. Passing tests are not yet confirmed.
+
+main remains untouched. The pull request is not merged.
+
+Next milestone
+
+My recommendation is to develop NeuroMind v2 around:
+
+* Efficient attention and KV caching.
+* Streaming dataset ingestion.
+* Distributed multi-GPU training.
+* Model scaling experiments.
+* Benchmarking against held-out datasets.
+* Model checkpoint and tokenizer version management.
+
+The objective is to evolve NeuroMindAI into an independently engineered language-model family, not merely another wrapper around an existing model.
 Great. NeuroMindAI’s next milestone should be native tokenizer + dataset pipeline + real pretraining.
 
 That will move it from an experimental Transformer into a trainable language-model ecosystem.
