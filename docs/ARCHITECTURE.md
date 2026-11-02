@@ -1,33 +1,42 @@
 # Architecture
 
-## Data path
+## End-to-end data path
 
-`UTF-8 corpus → BpeTokenizer → token windows → NeuroMindLM → next-token loss`
+`UTF-8 corpus → BpeTokenizer → token windows → NeuroMindLM v1 → next-token loss`
 
-The tokenizer is trained on the training corpus and its exact merge table is embedded in each checkpoint. Inference and evaluation reconstruct that tokenizer from the checkpoint rather than retraining or guessing a vocabulary.
+The BPE tokenizer is learned from the training corpus. Its exact merge table is embedded in each checkpoint; inference and evaluation reconstruct the tokenizer from the checkpoint.
 
 ## Native byte-level BPE tokenizer
 
-The vocabulary begins with all 256 possible byte values. Training repeatedly counts adjacent token pairs, selects the most frequent pair (with deterministic lexicographic tie-breaking), and appends a new token representing that pair. The process stops at the requested vocabulary size or when no pair meets the minimum frequency.
+The vocabulary begins with all 256 possible byte values. Training repeatedly counts adjacent token pairs, selects the most frequent pair (with deterministic lexicographic tie-breaking), and appends a new token representing that pair. Training stops at the requested vocabulary size or when no pair meets the minimum frequency.
 
-This gives the tokenizer complete byte fallback for unseen text and lossless round-tripping of valid UTF-8. The merge list is versioned and serialized as integer pairs. The initial implementation favors clarity over large-corpus throughput: it performs repeated scans of the training sequence and is intended for tokenizer experiments, not billion-token preprocessing jobs.
+The byte fallback supports unseen UTF-8 content without an unknown-token failure. The merge list is versioned and serialized as integer pairs. The current trainer performs repeated in-memory scans and is intended for small experiments, not billion-token preprocessing.
 
-The legacy `ByteTokenizer` remains supported for older checkpoints without embedded tokenizer metadata.
+The legacy `ByteTokenizer` remains supported for checkpoints created before tokenizer metadata was embedded.
 
-## Model
+## NeuroMind v1 decoder
 
-The current model is a decoder-only Transformer:
-1. Token embedding and learned positional embedding.
-2. A stack of pre-normalized Transformer encoder blocks with a boolean causal mask.
-3. Final layer normalization.
-4. Vocabulary projection tied to the token embedding matrix.
+NeuroMind v1 is a native pre-normalized decoder architecture implemented from explicit PyTorch modules:
 
-For a batch of token sequences, logits have shape `[batch, sequence, vocabulary]`. Training compares each position's logits with the corresponding next-token target. The model vocabulary size is derived from the trained tokenizer to prevent embedding/token-ID mismatches.
+1. **Token embedding** maps token IDs to the hidden width.
+2. **RMSNorm** normalizes activations without mean subtraction.
+3. **Fused causal self-attention** projects Q/K/V, applies rotary position embeddings (RoPE), and uses PyTorch scaled dot-product attention with a causal constraint.
+4. **SwiGLU feed-forward network** applies a SiLU-gated projection and down projection.
+5. **Residual connections** wrap attention and feed-forward sublayers.
+6. **Final RMSNorm and tied output projection** produce next-token logits.
 
-## Checkpoints
+The head dimension must be even for rotary embeddings. The architecture uses no learned absolute position embedding. Attention is causal in both training and inference. The model vocabulary size is derived from the trained tokenizer to prevent embedding/token-ID mismatches.
 
-New checkpoints contain a format version, model configuration, model state dictionary, complete tokenizer state, and basic training metadata. The inference loader uses PyTorch's `weights_only=True` loading mode. Treat checkpoints as trusted artifacts nonetheless and record dataset provenance and training parameters for research runs.
+## Legacy checkpoint compatibility
 
-## Deliberate boundaries
+The original baseline used `nn.TransformerEncoderLayer` blocks and learned positional embeddings. The inference loader recognizes those checkpoint keys and selects the legacy architecture so existing baseline checkpoints remain loadable.
 
-This is still a compact research baseline, not a pretrained foundation model. It does not claim distributed training, optimized large-corpus tokenization, instruction tuning, tool use, or a safety-alignment layer. Add those as independently tested modules rather than coupling them into the core model.
+## Training and checkpoints
+
+The training engine supports gradient accumulation, optional CUDA automatic mixed precision (FP16 or BF16), gradient clipping, periodic checkpoint writes, and resume from a compatible checkpoint. A checkpoint includes model configuration, model weights, tokenizer merges, optimizer/scaler state, and basic training metadata.
+
+Resume requires the same model configuration and tokenizer state. This protects against accidentally continuing a run with a changed vocabulary.
+
+## Boundaries
+
+This is a compact research implementation, not a pretrained foundation model. Distributed training, streaming datasets, optimized large-corpus BPE, instruction tuning, tool use, and safety evaluation remain future work.
