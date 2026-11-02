@@ -25,6 +25,7 @@ tokenizer/       byte fallback and native BPE implementation
 training/        training CLI and checkpoint lifecycle
 datasets/        sliding-window text data
 evaluation/      cross-entropy and perplexity evaluation
+benchmarks/      throughput benchmark CLI
 configs/         model defaults
 docs/            architecture and development notes
 tests/           automated tests
@@ -56,7 +57,16 @@ python -m training.train \
   --grad-accum-steps 2
 ```
 
-For CUDA mixed precision, add `--amp` and choose `--amp-dtype bf16` or `--amp-dtype fp16`. Resume a compatible run with `--resume checkpoints/neuromind.pt`. The demonstration corpus is only for smoke tests; it is not sufficient to train a useful language model.
+For CUDA mixed precision, add `--amp` and choose `--amp-dtype bf16` or `--amp-dtype fp16`. Resume a compatible run with `--resume checkpoints/neuromind.pt`. Add `--streaming` to read training text incrementally after tokenizer training. The demonstration corpus is only for smoke tests; it is not sufficient to train a useful language model.
+
+For multi-GPU training, launch map-style training with PyTorch DDP:
+
+```bash
+torchrun --standalone --nproc_per_node=2 -m training.train \\
+  --data path/to/train.txt --steps 1000 --batch-size 8
+```
+
+Streaming mode is currently single-process only. The tokenizer-training phase currently reads the corpus into memory even when streaming batches are enabled.
 
 ## Generate
 
@@ -65,6 +75,16 @@ python -m neuromind.inference \
   --checkpoint checkpoints/neuromind.pt \
   --prompt "NeuroMindAI"
 ```
+
+## Benchmark
+
+Measure model forward/backward throughput on the current device:
+
+```bash
+python -m benchmarks.benchmark_model --device cpu --iterations 10
+```
+
+The benchmark reports synthetic training tokens per second and, on CUDA, peak allocated memory. Compare results only with matching hardware, model settings, batch size, and sequence length.
 
 ## Evaluate
 
