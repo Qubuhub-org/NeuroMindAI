@@ -58,6 +58,8 @@ def train(args: argparse.Namespace) -> Path:
     try:
         if args.device:
             device = torch.device(args.device)
+            if device.type == "cuda" and device.index is None:
+                device = torch.device(f"cuda:{local_rank}" if is_distributed else "cuda")
         elif torch.cuda.is_available():
             device = torch.device(f"cuda:{local_rank}" if is_distributed else "cuda")
         else:
@@ -79,7 +81,7 @@ def train(args: argparse.Namespace) -> Path:
             )
         amp_dtype = torch.float16 if args.amp_dtype == "fp16" else torch.bfloat16
         use_scaler = use_amp and amp_dtype == torch.float16
-        scaler = torch.amp.GradScaler("cuda", enabled=use_scaler)
+        scaler = torch.cuda.amp.GradScaler(enabled=use_scaler)
 
         corpus = Path(args.data).read_text(encoding="utf-8")
         tokenizer = BpeTokenizer.train(
