@@ -20,7 +20,7 @@ def _save_checkpoint(
     output: Path,
     model: NeuroMindLM,
     optimizer: torch.optim.Optimizer,
-    scaler: torch.amp.GradScaler,
+    scaler: torch.cuda.amp.GradScaler,
     tokenizer: BpeTokenizer,
     step: int,
     seed: int,
