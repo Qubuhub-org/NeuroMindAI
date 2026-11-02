@@ -6,7 +6,7 @@ import random
 from pathlib import Path
 
 import torch
-import torch.distributed as distributed
+from torch import distributed
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader, DistributedSampler
 
