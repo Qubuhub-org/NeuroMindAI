@@ -2,26 +2,27 @@
 
 **An independent, research-oriented language-model foundation.**
 
-NeuroMindAI currently provides a compact decoder-only Transformer, a native byte-level BPE tokenizer with full byte fallback, a training pipeline, evaluation, and checkpoint-based inference.
+NeuroMindAI provides a native decoder-only architecture, byte-level BPE tokenizer, training engine, evaluation, and checkpoint-based inference.
 
 > **Status:** research foundation. No pretrained weights are included. Useful language capability requires training on a large, curated, appropriately licensed dataset.
 
 ## Included
 
-- Native BPE tokenizer trained from UTF-8 text, with deterministic merges and reversible byte fallback.
-- Versioned tokenizer serialization embedded in model checkpoints.
-- Causal Transformer language model with token and positional embeddings.
+- Native byte-level BPE tokenizer with deterministic merges and full byte fallback.
+- Versioned tokenizer state embedded in model checkpoints.
+- **NeuroMind v1:** RMSNorm, rotary position embeddings, causal self-attention, SwiGLU MLP, and residual decoder blocks.
+- Legacy Transformer checkpoint compatibility.
 - Sliding-window next-token dataset utilities.
-- Reproducible training entry point with gradient clipping.
-- Checkpoint-based text generation and evaluation (cross-entropy/perplexity).
+- Training with gradient accumulation, optional CUDA mixed precision, gradient clipping, periodic checkpoints, and resume.
+- Checkpoint-based generation and cross-entropy/perplexity evaluation.
 - Unit tests and GitHub Actions CI.
 
 ## Repository layout
 
 ```text
-neuromind/       model configuration, architecture, inference
+neuromind/       model configuration, native architecture, inference
 tokenizer/       byte fallback and native BPE implementation
-training/        training CLI
+training/        training CLI and checkpoint lifecycle
 datasets/        sliding-window text data
 evaluation/      cross-entropy and perplexity evaluation
 configs/         model defaults
@@ -44,19 +45,20 @@ pip install -e ".[dev]"
 
 On Windows PowerShell, activate with `.venv\\Scripts\\Activate.ps1`. For CUDA, install the PyTorch wheel matching your CUDA runtime using the official PyTorch installation selector.
 
-## Train a small model
+## Train
 
 ```bash
 python -m training.train \
   --data examples/tiny_corpus.txt \
   --steps 100 \
   --batch-size 8 \
-  --vocab-size 320
+  --vocab-size 320 \
+  --grad-accum-steps 2
 ```
 
-The tokenizer is learned from the supplied training corpus. Its vocabulary size becomes the model's vocabulary size, and its merge table is stored in the checkpoint. The demonstration corpus is only for pipeline smoke tests; it is not sufficient to train a useful language model.
+For CUDA mixed precision, add `--amp` and choose `--amp-dtype bf16` or `--amp-dtype fp16`. Resume a compatible run with `--resume checkpoints/neuromind.pt`. The demonstration corpus is only for smoke tests; it is not sufficient to train a useful language model.
 
-## Generate text
+## Generate
 
 ```bash
 python -m neuromind.inference \
@@ -66,27 +68,26 @@ python -m neuromind.inference \
 
 ## Evaluate
 
-Use a held-out UTF-8 corpus that was not used for training:
-
 ```bash
 python -m evaluation.evaluate \
   --checkpoint checkpoints/neuromind.pt \
   --data path/to/held-out.txt
 ```
 
-The reported perplexity is meaningful only when comparing models evaluated with the same tokenizer and compatible evaluation data.
+Perplexity comparisons require the same tokenizer and compatible evaluation data.
 
-## Baseline model defaults
+## Model defaults
 
 | Setting | Default |
 |---|---:|
 | BPE vocabulary target | 512 |
 | Context length | 256 in config; 128 in training CLI |
 | Hidden width | 256 in config; 128 in training CLI |
-| Transformer layers | 4 |
+| Decoder layers | 4 |
 | Attention heads | 4 |
 | Feed-forward width | 1,024 in config; 512 in training CLI |
 | Dropout | 0.1 |
+| RoPE theta | 10,000 |
 
 ## Engineering principles
 
@@ -98,7 +99,7 @@ The reported perplexity is meaningful only when comparing models evaluated with 
 
 ## Limitations and roadmap
 
-This is not a pretrained or production foundation model. The current BPE trainer uses repeated in-memory scans and needs optimization before large-scale corpus preparation. Distributed training, mixed precision, data streaming, tokenizer throughput benchmarks, instruction tuning, tool use, and safety evaluation remain future work.
+This is not a pretrained or production foundation model. The BPE trainer currently uses repeated in-memory scans and needs optimization before large-scale corpus preparation. Distributed training, streaming data, tokenizer throughput benchmarks, instruction tuning, tool use, and safety evaluation remain future work.
 
 See [Architecture](docs/ARCHITECTURE.md) and [Development](docs/DEVELOPMENT.md).
 
