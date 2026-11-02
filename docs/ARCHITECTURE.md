@@ -2,28 +2,32 @@
 
 ## Data path
 
-`UTF-8 corpus → ByteTokenizer → token windows → NeuroMindLM → next-token loss`
+`UTF-8 corpus → BpeTokenizer → token windows → NeuroMindLM → next-token loss`
 
-Inference reverses the path: prompt text is encoded, tokens are sampled autoregressively, and the resulting byte sequence is decoded.
+The tokenizer is trained on the training corpus and its exact merge table is embedded in each checkpoint. Inference and evaluation reconstruct that tokenizer from the checkpoint rather than retraining or guessing a vocabulary.
 
-## Tokenizer
+## Native byte-level BPE tokenizer
 
-The initial tokenizer maps each UTF-8 byte to its unsigned integer value (0–255). It is deterministic, has no training phase, and preserves valid UTF-8 text exactly. This avoids a hidden dependency on a third-party vocabulary. Its trade-off is sequence length: byte tokens are less compact than subword tokens. A future BPE or unigram tokenizer should be versioned and checkpointed so model weights cannot silently use a different token mapping.
+The vocabulary begins with all 256 possible byte values. Training repeatedly counts adjacent token pairs, selects the most frequent pair (with deterministic lexicographic tie-breaking), and appends a new token representing that pair. The process stops at the requested vocabulary size or when no pair meets the minimum frequency.
+
+This gives the tokenizer complete byte fallback for unseen text and lossless round-tripping of valid UTF-8. The merge list is versioned and serialized as integer pairs. The initial implementation favors clarity over large-corpus throughput: it performs repeated scans of the training sequence and is intended for tokenizer experiments, not billion-token preprocessing jobs.
+
+The legacy `ByteTokenizer` remains supported for older checkpoints without embedded tokenizer metadata.
 
 ## Model
 
-The model is a decoder-only Transformer:
+The current model is a decoder-only Transformer:
 1. Token embedding and learned positional embedding.
 2. A stack of pre-normalized Transformer encoder blocks with a boolean causal mask.
 3. Final layer normalization.
 4. Vocabulary projection tied to the token embedding matrix.
 
-For a batch of token sequences, logits have shape `[batch, sequence, vocabulary]`. Training compares each position's logits with the corresponding next-token target.
+For a batch of token sequences, logits have shape `[batch, sequence, vocabulary]`. Training compares each position's logits with the corresponding next-token target. The model vocabulary size is derived from the trained tokenizer to prevent embedding/token-ID mismatches.
 
 ## Checkpoints
 
-A checkpoint contains a plain configuration dictionary and a model state dictionary. The inference loader uses PyTorch's `weights_only=True` loading mode. Treat checkpoints as trusted artifacts nonetheless and record their provenance, dataset, and training parameters for research runs.
+New checkpoints contain a format version, model configuration, model state dictionary, complete tokenizer state, and basic training metadata. The inference loader uses PyTorch's `weights_only=True` loading mode. Treat checkpoints as trusted artifacts nonetheless and record dataset provenance and training parameters for research runs.
 
 ## Deliberate boundaries
 
-This baseline does not claim to provide a pretrained foundation model, distributed training, a production tokenizer, model-serving API, alignment, or domain-specific capability. Add those as independently tested modules rather than coupling them into the core model.
+This is still a compact research baseline, not a pretrained foundation model. It does not claim distributed training, optimized large-corpus tokenization, instruction tuning, tool use, or a safety-alignment layer. Add those as independently tested modules rather than coupling them into the core model.
