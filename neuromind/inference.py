@@ -48,9 +48,14 @@ def generate(
     if input_ids.ndim != 2 or input_ids.size(1) == 0:
         raise ValueError("input_ids must be a non-empty [batch, sequence] tensor")
     model.eval()
-    for _ in range(max_new_tokens):
-        context = input_ids[:, -model.config.context_length :]
+    use_cache = model.config.architecture == "neuromind_v1"
+    cache = None
+    context = input_ids[:, -model.config.context_length :]
+    if use_cache:
+        logits, cache = model.forward_with_cache(context)
+    else:
         logits, _ = model(context)
+    for _ in range(max_new_tokens):
         next_logits = logits[:, -1, :] / temperature
         if top_k is not None:
             if top_k < 1:
@@ -61,6 +66,16 @@ def generate(
         probabilities = torch.softmax(next_logits, dim=-1)
         next_token = torch.multinomial(probabilities, num_samples=1)
         input_ids = torch.cat((input_ids, next_token), dim=1)
+        if use_cache:
+            cached_length = cache[0][0].size(-2)
+            if cached_length >= model.config.context_length:
+                context = input_ids[:, -model.config.context_length :]
+                logits, cache = model.forward_with_cache(context)
+            else:
+                logits, cache = model.forward_with_cache(next_token, cache)
+        else:
+            context = input_ids[:, -model.config.context_length :]
+            logits, _ = model(context)
     return input_ids
 
 
