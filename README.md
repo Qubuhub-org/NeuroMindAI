@@ -2,102 +2,91 @@
 
 **An independent, research-oriented language-model foundation.**
 
-NeuroMindAI starts with a compact, decoder-only Transformer implemented in native PyTorch modules and a reversible UTF-8 byte tokenizer. The repository is intentionally structured so tokenization, model architecture, data, training, evaluation, and inference can evolve independently.
+NeuroMindAI currently provides a compact decoder-only Transformer, a native byte-level BPE tokenizer with full byte fallback, a training pipeline, evaluation, and checkpoint-based inference.
 
-> **Status:** foundational implementation. No pretrained weights are included. A model must be trained on an appropriately licensed dataset before it can be expected to produce useful language.
+> **Status:** research foundation. No pretrained weights are included. Useful language capability requires training on a large, curated, appropriately licensed dataset.
 
-## What is included
+## Included
 
-- A byte-level tokenizer with deterministic, lossless UTF-8 round-tripping.
-- A causal Transformer language model with token and positional embeddings.
-- Sliding-window text dataset utilities.
-- A reproducible, configurable training entry point.
-- Checkpoint-based text generation.\n- Evaluation with next-token cross-entropy and perplexity.
-- Unit tests and a GitHub Actions test workflow.
+- Native BPE tokenizer trained from UTF-8 text, with deterministic merges and reversible byte fallback.
+- Versioned tokenizer serialization embedded in model checkpoints.
+- Causal Transformer language model with token and positional embeddings.
+- Sliding-window next-token dataset utilities.
+- Reproducible training entry point with gradient clipping.
+- Checkpoint-based text generation and evaluation (cross-entropy/perplexity).
+- Unit tests and GitHub Actions CI.
 
 ## Repository layout
 
 ```text
-neuromind/
-  __init__.py
-  config.py
-  model.py
-  inference.py
-tokenizer/
-  __init__.py
-  byte_tokenizer.py
-training/
-  __init__.py
-  train.py
-datasets/
-  __init__.py
-  text.py
-configs/
-  base.json
-docs/
-  ARCHITECTURE.md
-  DEVELOPMENT.md
-tests/
-  test_tokenizer.py
-  test_model.py
-examples/
-  tiny_corpus.txt
-.github/workflows/
-  tests.yml
+neuromind/       model configuration, architecture, inference
+tokenizer/       byte fallback and native BPE implementation
+training/        training CLI
+datasets/        sliding-window text data
+evaluation/      cross-entropy and perplexity evaluation
+configs/         model defaults
+docs/            architecture and development notes
+tests/           automated tests
+examples/        small demonstration corpus
 ```
 
-## Requirements
+## Requirements and installation
 
 - Python 3.10+
 - PyTorch 2.2+
-- CPU is supported; CUDA is used when available and requested by the runtime.
-
-Install:
 
 ```bash
 python -m venv .venv
-# Linux/macOS
 source .venv/bin/activate
-# Windows PowerShell: .venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 pip install -e ".[dev]"
 ```
 
-For a CUDA-enabled PyTorch build, install the matching wheel from the official PyTorch installation selector before installing this project with `--no-deps`.
+On Windows PowerShell, activate with `.venv\\Scripts\\Activate.ps1`. For CUDA, install the PyTorch wheel matching your CUDA runtime using the official PyTorch installation selector.
 
 ## Train a small model
 
-Start with the included demonstration corpus:
-
 ```bash
-python -m training.train --data examples/tiny_corpus.txt --steps 100 --batch-size 8
+python -m training.train \
+  --data examples/tiny_corpus.txt \
+  --steps 100 \
+  --batch-size 8 \
+  --vocab-size 320
 ```
 
-This is a smoke-test configuration, not a meaningful pretraining run. Use a large, curated, licensed corpus and tune the model and optimization settings for real experiments.
+The tokenizer is learned from the supplied training corpus. Its vocabulary size becomes the model's vocabulary size, and its merge table is stored in the checkpoint. The demonstration corpus is only for pipeline smoke tests; it is not sufficient to train a useful language model.
 
 ## Generate text
 
 ```bash
-python -m neuromind.inference --checkpoint checkpoints/neuromind.pt --prompt "NeuroMindAI"
+python -m neuromind.inference \
+  --checkpoint checkpoints/neuromind.pt \
+  --prompt "NeuroMindAI"
 ```
 
-The checkpoint must first be produced by training. Generation supports temperature and top-k sampling.
+## Evaluate
 
-## Configuration
+Use a held-out UTF-8 corpus that was not used for training:
 
-The default architecture is deliberately small:
+```bash
+python -m evaluation.evaluate \
+  --checkpoint checkpoints/neuromind.pt \
+  --data path/to/held-out.txt
+```
+
+The reported perplexity is meaningful only when comparing models evaluated with the same tokenizer and compatible evaluation data.
+
+## Baseline model defaults
 
 | Setting | Default |
 |---|---:|
-| Vocabulary | 256 byte values |
-| Context length | 256 tokens |
-| Hidden width | 256 |
+| BPE vocabulary target | 512 |
+| Context length | 256 in config; 128 in training CLI |
+| Hidden width | 256 in config; 128 in training CLI |
 | Transformer layers | 4 |
 | Attention heads | 4 |
-| Feed-forward width | 1,024 |
+| Feed-forward width | 1,024 in config; 512 in training CLI |
 | Dropout | 0.1 |
-
-Edit `configs/base.json` or pass corresponding command-line options to the training script.
 
 ## Engineering principles
 
@@ -109,10 +98,10 @@ Edit `configs/base.json` or pass corresponding command-line options to the train
 
 ## Limitations and roadmap
 
-This initial implementation is a research baseline, not a production foundation model. It does not include pretrained weights, distributed training, mixed-precision orchestration, a subword/BPE tokenizer, instruction tuning, tool use, or a safety-alignment layer. Those capabilities should be added behind tested interfaces and justified by measurable requirements.
+This is not a pretrained or production foundation model. The current BPE trainer uses repeated in-memory scans and needs optimization before large-scale corpus preparation. Distributed training, mixed precision, data streaming, tokenizer throughput benchmarks, instruction tuning, tool use, and safety evaluation remain future work.
 
 See [Architecture](docs/ARCHITECTURE.md) and [Development](docs/DEVELOPMENT.md).
 
 ## License
 
-No license has been selected in this initialization. Do not assume the code is open-source licensed until the repository owner adds and approves a license file.
+No license has been selected. Do not assume the repository is open-source licensed until the owner adds and approves a license file.
