@@ -1,0 +1,10 @@
+NeuroMindAI is an experimental language model.
+A language model learns patterns from text.
+A transformer uses attention to process sequences.
+Training adjusts model parameters to predict the next token.
+A tokenizer converts text into numbers.
+The byte tokenizer maps UTF-8 bytes to integer token identifiers.
+A causal attention mask prevents a position from reading future tokens.
+Small experiments help validate the training pipeline.
+Reliable systems require tests, documentation, and reproducible configuration.
+NeuroMindAI is a foundation for careful research and engineering.
