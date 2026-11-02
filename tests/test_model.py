@@ -43,3 +43,24 @@ def test_causal_mask_blocks_future_tokens():
         logits_a, _ = model(first)
         logits_b, _ = model(changed_future)
     assert torch.allclose(logits_a[:, :2], logits_b[:, :2], atol=1e-6)
+
+
+def test_native_neuromind_v1_uses_rope_and_swiglu():
+    config = tiny_config()
+    model = NeuroMindLM(config)
+    assert model.config.architecture == "neuromind_v1"
+    assert not hasattr(model, "position_embedding")
+    inputs = torch.randint(0, config.vocab_size, (2, 8))
+    logits, loss = model(inputs, inputs)
+    assert logits.shape == (2, 8, config.vocab_size)
+    assert loss is not None and torch.isfinite(loss)
+
+
+def test_legacy_transformer_architecture_remains_loadable():
+    config = tiny_config()
+    config.architecture = "legacy_transformer"
+    model = NeuroMindLM(config)
+    inputs = torch.randint(0, config.vocab_size, (2, 8))
+    logits, loss = model(inputs, inputs)
+    assert logits.shape == (2, 8, config.vocab_size)
+    assert loss is not None and torch.isfinite(loss)
