@@ -7,8 +7,8 @@ appended in training order, making the vocabulary deterministic and reversible.
 from __future__ import annotations
 
 from collections import Counter
-from itertools import pairwise
 from dataclasses import dataclass
+from itertools import pairwise
 
 
 @dataclass(frozen=True)
@@ -139,7 +139,7 @@ class BpeTokenizer:
         }
 
     @classmethod
-    def from_dict(cls, state: dict) -> "BpeTokenizer":
+    def from_dict(cls, state: dict) -> BpeTokenizer:
         if state.get("type") != "bpe" or state.get("version") != 1:
             raise ValueError("unsupported tokenizer format or version")
         if state.get("base_vocab_size") != 256:
