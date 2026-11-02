@@ -12,7 +12,7 @@ NeuroMindAI starts with a compact, decoder-only Transformer implemented in nativ
 - A causal Transformer language model with token and positional embeddings.
 - Sliding-window text dataset utilities.
 - A reproducible, configurable training entry point.
-- Checkpoint-based text generation.
+- Checkpoint-based text generation.\n- Evaluation with next-token cross-entropy and perplexity.
 - Unit tests and a GitHub Actions test workflow.
 
 ## Repository layout
