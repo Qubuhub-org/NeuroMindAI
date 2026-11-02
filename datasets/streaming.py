@@ -1,12 +1,12 @@
-"""Map-style and streaming datasets for next-token language modeling."""
+"""Streaming dataset for next-token language modeling."""
 
 from collections.abc import Iterator
 from pathlib import Path
 
 import torch
-from torch.utils.data import Dataset, IterableDataset
+from torch.utils.data import IterableDataset
 
-from tokenizer import BpeTokenizer, ByteTokenizer
+from tokenizer import BpeTokenizer
 
 
 class TextWindowDataset(Dataset):
